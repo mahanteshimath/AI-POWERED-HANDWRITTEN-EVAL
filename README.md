@@ -58,23 +58,23 @@ flowchart TB
 ```mermaid
 flowchart TD
   subgraph T[Teacher setup once per exam]
-    AKF[answer_key.pdf] --> AKS[Snowflake Stage answer_keys/]
-    RBF[rubric.pdf] --> RBS[Snowflake Stage rubrics/]
+    AKF["answer_key.pdf"] --> AKS["Snowflake Stage answer_keys/"]
+    RBF["rubric.pdf"] --> RBS["Snowflake Stage rubrics/"]
   end
 
   subgraph S[Student evaluation]
-    SAF[student_answer.pdf] --> SAS[Snowflake Stage student_answers/]
+    SAF["student_answer.pdf"] --> SAS["Snowflake Stage student_answers/"]
   end
 
   AKS --> CALL
   RBS --> CALL
   SAS --> CALL
 
-  CALL[Single AI_COMPLETE call via PROMPT()<br/>{0} answer key PDF<br/>{1} rubric PDF<br/>{2} student handwritten PDF]
-  CALL --> JSON[Structured JSON evaluation result<br/>per-question marks and feedback<br/>total marks, percentage, grade<br/>strengths and recommendations]
+  CALL["Single AI_COMPLETE call via PROMPT()<br/>Input 1: answer key PDF<br/>Input 2: rubric PDF<br/>Input 3: student handwritten PDF"]
+  CALL --> JSON["Structured JSON evaluation result<br/>per-question marks and feedback<br/>total marks, percentage, grade<br/>strengths and recommendations"]
 
-  JSON --> UI[Display rich UI]
-  JSON --> SAVE[Save to HW_EVALUATIONS]
+  JSON --> UI["Display rich UI"]
+  JSON --> SAVE["Save to HW_EVALUATIONS"]
 ```
 
 ---
@@ -272,3 +272,9 @@ The system will:
 streamlit
 snowflake-snowpark-python
 ```
+
+---
+
+## License
+
+This project is licensed under the Apache License 2.0. See [LICENSE](LICENSE).
