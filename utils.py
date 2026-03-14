@@ -40,7 +40,7 @@ def show_footer() -> None:
     box-shadow: 0 -2px 10px rgba(0,0,0,0.3);
 }
 .footer p { margin: 0; }
-.footer a { color: white; text-decoration: none; }
+.footer a { color: white; text-decoration; }
 .footer a:hover { text-decoration: underline; }
 </style>
 <div class="footer">

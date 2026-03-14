@@ -1,9 +1,36 @@
+import os
 import streamlit as st
 from snowflake.snowpark.context import get_active_session
 from utils import show_footer
 
+
+def _ensure_logo_png(path="assets/logo_icon.png"):
+    if os.path.exists(path):
+        return path
+    os.makedirs("assets", exist_ok=True)
+    try:
+        from PIL import Image, ImageDraw
+        W, H = 64, 64
+        img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(img)
+        # Purple rounded background
+        draw.rounded_rectangle([(0, 0), (W-1, H-1)], radius=14, fill=(44, 30, 91))
+        # White page
+        draw.rounded_rectangle([(12, 8), (50, 56)], radius=4, fill=(255, 255, 255))
+        # Handwriting lines
+        draw.line([(18, 20), (44, 20)], fill=(44, 30, 91), width=2)
+        draw.line([(18, 28), (44, 28)], fill=(44, 30, 91), width=2)
+        draw.line([(18, 36), (36, 36)], fill=(44, 30, 91), width=2)
+        # Green checkmark
+        draw.line([(28, 47), (33, 53)], fill=(34, 197, 94), width=3)
+        draw.line([(33, 53), (48, 40)], fill=(34, 197, 94), width=3)
+        img.save(path)
+        return path
+    except Exception:
+        return None
+
 st.set_page_config(
-    page_title="AI Handwritten Eval",
+    page_title="AI Handwritten Eval | IITJ",
     page_icon="📝",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -94,6 +121,10 @@ if "schema_v3" not in st.session_state:
     st.session_state.schema_v3 = True
 
 st.session_state.get_snowflake_session = get_snowflake_session
+
+_logo = _ensure_logo_png()
+if _logo:
+    st.logo(_logo, link="https://bit.ly/atozaboutdata")
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
