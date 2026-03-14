@@ -1,183 +1,205 @@
-import io
 import json
-import re
-import textwrap
-import time
 
 import streamlit as st
 
-st.title("🎯 Evaluate Student Answer")
-st.caption("Upload a student's answer sheet — Snowflake Cortex will OCR and evaluate it.")
+from utils import (
+    DB, SCHEMA, STAGE,
+    MAX_SIZE_CLAUDE_MB, MAX_SIZE_GEMINI_MB,
+    upload_to_stage, show_file_size, validate_file_for_upload,
+    assign_grade, render_evaluation_detail,
+)
 
-# ── Snowflake session ─────────────────────────────────────────────────────────
+st.title("🎯 Evaluate Student Answer")
+st.caption(
+    "Upload a student's answer sheet — Snowflake Cortex reads all three PDFs directly "
+    "with no separate OCR step."
+)
+
 session = st.session_state.get_snowflake_session()
 
-DB, SCHEMA = "IITJ", "MH"
-STAGE = f"@{DB}.{SCHEMA}.HW_EVAL_STAGE"
-
-DEFAULT_MODEL = "claude-sonnet-4-6"
-LLM_MODELS = ["claude-sonnet-4-6", "claude-3-5-sonnet"]
+# Models that support PDF document input (per Snowflake Cortex docs)
+DOC_MODELS = [
+    "gemini-3-pro",      # 10 MB document limit — best for large scans (default)
+    "claude-sonnet-4-5", # 4.5 MB limit
+]
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def safe_name(filename: str) -> str:
-    stem = re.sub(r"[^a-zA-Z0-9_\-.]", "_", filename)
-    return f"{int(time.time())}_{stem}"
+def evaluate_with_files(
+    model: str,
+    ak_path: str,
+    rubric_path: str,
+    student_path: str,
+    total_marks: int,
+) -> str:
+    """
+    Send all three PDFs directly to AI_COMPLETE via the PROMPT() function.
+    {0} = answer key, {1} = rubric, {2} = student handwritten answer.
+    No OCR pre-processing — the model reads the documents natively.
+    """
+    # Sanitise paths for SQL embedding
+    ak   = ak_path.replace("'", "")
+    rb   = rubric_path.replace("'", "")
+    stud = student_path.replace("'", "")
 
-
-def upload_to_stage(uploaded_file, subfolder: str) -> str:
-    """Upload file to stage subfolder; return relative path."""
-    fname = safe_name(uploaded_file.name)
-    stage_path = f"{subfolder}/{fname}"
-    session.file.put_stream(
-        io.BytesIO(uploaded_file.getvalue()),
-        f"{STAGE}/{stage_path}",
-        overwrite=True,
-        auto_compress=False,
+    # JSON schema template — {N} placeholders below are for Snowflake PROMPT(),
+    # not Python f-string substitutions.
+    json_schema = (
+        '{"questions":['
+        '{"question_number":1,"topic":"brief topic","marks_obtained":0,"max_marks":0,'
+        '"correctness":"correct|partially_correct|incorrect","feedback":"specific feedback"}'
+        f'],"total_marks_obtained":0,"total_marks_possible":{total_marks},'
+        '"percentage":0.0,"grade":"A+|A|B+|B|C|D|F",'
+        '"overall_feedback":"comprehensive summary",'
+        '"strengths":["strength1"],'
+        '"areas_for_improvement":["area1"],'
+        '"recommendations":["recommendation1"]}'
     )
-    return stage_path
+    # Escape { and } so PROMPT() doesn't treat JSON keys as {N} file-reference placeholders.
+    # {0}/{1}/{2} in prompt_parts below are added after this escaping and remain intact.
+    json_schema = json_schema.replace("{", "{{").replace("}", "}}")
 
+    prompt_parts = [
+        "You are an expert academic evaluator.",
+        "Document {0} is the model answer key.",
+        "Document {1} is the marking rubric with the scoring criteria.",
+        "Document {2} is the student handwritten answer sheet to be graded.",
+        f"Total marks available for this exam: {total_marks}.",
+        "Carefully read all three documents and evaluate the student answers"
+        " against the answer key and rubric.",
+        "The student answers are handwritten — interpret them accurately even if the handwriting"
+        " is imperfect or contains corrections.",
+        "Return ONLY valid JSON with no markdown fences, no code blocks, no extra text,"
+        " in exactly this format: " + json_schema + ".",
+        "Rules:",
+        "- Award partial marks when the approach is correct but the final answer is wrong.",
+        "- Be constructive and specific in all feedback.",
+        "- Do not penalise heavily for minor spelling errors in handwriting.",
+        f"- Grade scale: A+(>=90) A(>=80) B+(>=70) B(>=60) C(>=50) D(>=40) F(<40).",
+    ]
 
-def ocr_from_stage(stage_path: str) -> str:
+    # Escape single quotes so the prompt embeds safely inside a SQL string literal
+    prompt_tmpl = " ".join(prompt_parts).replace("'", "''")
+
+    sql = f"""
+        SELECT AI_COMPLETE(
+            '{model}',
+            PROMPT(
+                '{prompt_tmpl}',
+                TO_FILE('{STAGE}', '{ak}'),
+                TO_FILE('{STAGE}', '{rb}'),
+                TO_FILE('{STAGE}', '{stud}')
+            )
+        ) AS response
     """
-    Extract text using AI_PARSE_DOCUMENT (TO_FILE) with OCR mode.
-    page_split=TRUE handles multi-page / large documents.
-    Returns an array of page objects; we join all page content into one string.
-    """
-    safe_path = stage_path.replace("'", "")
-    result = session.sql(
-        f"""
-        SELECT AI_PARSE_DOCUMENT(
-            TO_FILE('{STAGE}', '{safe_path}'),
-            {{'mode': 'OCR', 'page_split': TRUE}}
-        ) AS parsed
-        """
-    ).collect()
+    result = session.sql(sql).collect()
     if not result:
         return ""
-
-    parsed = result[0]["PARSED"]
-
-    # page_split=TRUE → VARIANT is a list of per-page objects
-    if isinstance(parsed, list):
-        page_texts = []
-        for page_obj in parsed:
-            if isinstance(page_obj, dict):
-                page_texts.append(str(page_obj.get("content", "")))
-        return "\n".join(page_texts)
-
-    # No page_split (or single page) → VARIANT is a single dict
-    if isinstance(parsed, dict):
-        content = parsed.get("content", "")
-        if isinstance(content, list):
-            return " ".join(
-                b.get("text", str(b)) if isinstance(b, dict) else str(b)
-                for b in content
-            )
-        return str(content)
-
-    return str(parsed) if parsed else ""
-
-
-def build_prompt(answer_key: str, rubric: str, total_marks: int, student_answer: str) -> str:
-    return textwrap.dedent(f"""\
-        You are an expert academic evaluator. Fairly evaluate the student's handwritten
-        answer against the model answer and rubric provided below.
-
-        <answer_key>
-        {answer_key}
-        </answer_key>
-
-        <rubric>
-        {rubric}
-        Total marks: {total_marks}
-        </rubric>
-
-        <student_answer>
-        {student_answer}
-        </student_answer>
-
-        Return ONLY valid JSON (no markdown fences, no extra text) in exactly this format:
-
-        {{
-            "questions": [
-                {{
-                    "question_number": 1,
-                    "topic": "brief topic",
-                    "marks_obtained": 0,
-                    "max_marks": 0,
-                    "correctness": "correct | partially_correct | incorrect",
-                    "feedback": "specific feedback"
-                }}
-            ],
-            "total_marks_obtained": 0,
-            "total_marks_possible": {total_marks},
-            "percentage": 0.0,
-            "grade": "A+ | A | B+ | B | C | D | F",
-            "overall_feedback": "comprehensive summary",
-            "strengths": ["strength1"],
-            "areas_for_improvement": ["area1"],
-            "recommendations": ["recommendation1"]
-        }}
-
-        Rules:
-        - Award partial marks where the approach is correct but final answer is wrong.
-        - Be constructive and specific in feedback.
-        - If OCR-transcribed handwriting is unclear, note it but do not penalise heavily.
-        - Grade scale: A+(>=90), A(>=80), B+(>=70), B(>=60), C(>=50), D(>=40), F(<40).
-    """)
+    raw = result[0]["RESPONSE"]
+    if raw is None:
+        return ""
+    # AI_COMPLETE returns a VARIANT — handle all known envelope formats:
+    #   Snowflake native:  {"choices": [{"messages": "text"}]}
+    #   OpenAI-compatible: {"choices": [{"message": {"content": "text"}}]}
+    if isinstance(raw, dict):
+        choices = raw.get("choices") or []
+        if choices:
+            choice = choices[0]
+            # Snowflake native format
+            if "messages" in choice:
+                return str(choice["messages"] or "")
+            # OpenAI-compatible format
+            msg = choice.get("message") or {}
+            if isinstance(msg, dict):
+                return str(msg.get("content", "") or "")
+            if isinstance(msg, str):
+                return msg
+        return json.dumps(raw)
+    return str(raw)
 
 
-def parse_response(raw: str) -> dict | None:
+def parse_response(raw) -> dict | None:
+    if not isinstance(raw, str):
+        raw = str(raw)
     text = raw.strip()
+
+    # Strip markdown code fences
     if text.startswith("```"):
-        text = text.split("\n", 1)[-1]
-    if text.endswith("```"):
-        text = text.rsplit("```", 1)[0]
-    text = text.strip()
+        lines = text.splitlines()
+        text = "\n".join(lines[1:])
+        if text.endswith("```"):
+            text = text[: text.rfind("```")].strip()
+
+    # Try standard JSON parse.
+    # Handles: clean JSON, AND double-encoded strings where the AI wrapped
+    # the JSON object in an outer JSON string literal (  "{ ... }"  ).
     try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        start, end = text.find("{"), text.rfind("}") + 1
-        if start != -1 and end > start:
-            try:
-                return json.loads(text[start:end])
-            except json.JSONDecodeError:
-                return None
+        result = json.loads(text)
+        if isinstance(result, dict):
+            return result
+        if isinstance(result, str):
+            # Outer JSON value is itself a JSON string — parse once more
+            inner = json.loads(result)
+            if isinstance(inner, dict):
+                return inner
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    # Fallback: extract the first { ... } block from arbitrary text
+    start, end = text.find("{"), text.rfind("}") + 1
+    if start != -1 and end > start:
+        try:
+            return json.loads(text[start:end])
+        except json.JSONDecodeError:
+            pass
+
     return None
 
 
-def assign_grade(pct: float) -> str:
-    for threshold, grade in [(90, "A+"), (80, "A"), (70, "B+"), (60, "B"), (50, "C"), (40, "D")]:
-        if pct >= threshold:
-            return grade
-    return "F"
+# ── Load exams — include file paths to avoid a second SQL in the button handler ──
+@st.cache_data(ttl=60, show_spinner=False)
+def load_exam_rows(_session):
+    return [
+        r.as_dict() if hasattr(r, "as_dict") else dict(r)
+        for r in _session.sql(
+            f"""SELECT EXAM_ID, EXAM_NAME, SUBJECT, TOTAL_MARKS,
+                       ANSWER_KEY_FILE, RUBRIC_FILE
+                FROM {DB}.{SCHEMA}.HW_EXAMS
+                WHERE ANSWER_KEY_FILE IS NOT NULL AND RUBRIC_FILE IS NOT NULL
+                ORDER BY CREATED_AT DESC"""
+        ).collect()
+    ]
 
 
-# ── Load exams (only those with uploaded files) ──────────────────────────────
-rows = session.sql(
-    f"""SELECT EXAM_ID, EXAM_NAME, SUBJECT, TOTAL_MARKS
-        FROM {DB}.{SCHEMA}.HW_EXAMS
-        WHERE ANSWER_KEY_FILE IS NOT NULL AND RUBRIC_FILE IS NOT NULL
-        ORDER BY CREATED_AT DESC"""
-).collect()
-
+rows = load_exam_rows(session)
 if not rows:
     st.warning("No exams with uploaded files found. Please create one in **Setup Exam** first.")
     st.stop()
 
-exam_options = {f"{r['EXAM_NAME']}  ({r['SUBJECT'] or 'N/A'})  [ID:{r['EXAM_ID']}]": r for r in rows}
+exam_options = {
+    f"{r['EXAM_NAME']}  ({r['SUBJECT'] or 'N/A'})  [ID:{r['EXAM_ID']}]": r
+    for r in rows
+}
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
-    selected_model = st.selectbox("LLM Model", LLM_MODELS, index=0)
+    selected_model = st.selectbox(
+        "AI Model",
+        DOC_MODELS,
+        index=0,
+        help=(
+            f"gemini-3-pro supports up to {MAX_SIZE_GEMINI_MB:.0f} MB PDFs; "
+            f"Claude models up to {MAX_SIZE_CLAUDE_MB} MB."
+        ),
+    )
+    st.caption("All models read PDFs directly — no OCR pre-processing.")
 
 # ── 1. Select Exam ────────────────────────────────────────────────────────────
 with st.container(border=True):
     st.subheader("1. Select Exam")
     chosen = st.selectbox("Exam", list(exam_options.keys()))
-    exam = exam_options[chosen]
+    exam   = exam_options[chosen]
     st.caption(f"Total marks: **{exam['TOTAL_MARKS']}**")
 
 st.markdown("---")
@@ -193,14 +215,16 @@ st.markdown("---")
 with st.container(border=True):
     st.subheader("3. Student Answer Sheet")
     st.info(
-        "Upload the scanned / photographed answer sheet as a PDF. "
-        "Snowflake Cortex OCR will extract the handwritten text directly."
+        "Upload the scanned handwritten answer sheet as a PDF. "
+        "The AI model reads the PDF directly — no separate OCR step. "
+        f"Recommended: 300 DPI scan, file size under {MAX_SIZE_GEMINI_MB:.0f} MB "
+        f"(gemini-3-pro) or {MAX_SIZE_CLAUDE_MB} MB (Claude models)."
     )
     student_file = st.file_uploader(
         "Upload student answer PDF *", type=["pdf"], key="student_pdf"
     )
     if student_file:
-        st.success(f"Ready: **{student_file.name}**  ({student_file.size / 1024:.1f} KB)")
+        show_file_size(student_file, selected_model)
 
 st.markdown("---")
 
@@ -213,76 +237,40 @@ if st.button("🚀 Run AI Evaluation", type="primary", use_container_width=True)
         st.error("Please upload the student's answer PDF.")
         st.stop()
 
-    # Step 1 — Upload student answer to stage
+    # Hard-stop if file exceeds the chosen model's size limit
+    validate_file_for_upload(student_file, selected_model)
+
+    # File paths already loaded at page render — no extra Snowflake round-trip needed
+    answer_key_file = exam["ANSWER_KEY_FILE"]
+    rubric_file     = exam["RUBRIC_FILE"]
+    total_marks     = int(exam["TOTAL_MARKS"])
+
+    # ── Step 1: Upload student answer to stage ────────────────────────────────
     with st.spinner("Uploading student answer to Snowflake Stage..."):
         student_stage_path = upload_to_stage(student_file, "student_answers")
+    st.toast("Student answer uploaded.")
 
-    # Step 2 — Fetch exam record (answer key + rubric file paths)
-    exam_row = session.sql(
-        f"SELECT ANSWER_KEY_FILE, RUBRIC_FILE, TOTAL_MARKS FROM {DB}.{SCHEMA}.HW_EXAMS WHERE EXAM_ID = ?",
-        params=[exam["EXAM_ID"]],
-    ).collect()[0]
+    # ── Step 2: AI_COMPLETE — pass all 3 PDFs directly ───────────────────────
+    with st.spinner(
+        f"**{selected_model}** reading answer key, rubric, and student answer — evaluating... "
+        "(this may take 20–60 seconds)"
+    ):
+        raw = evaluate_with_files(
+            model=selected_model,
+            ak_path=answer_key_file,
+            rubric_path=rubric_file,
+            student_path=student_stage_path,
+            total_marks=total_marks,
+        )
 
-    answer_key_file = exam_row["ANSWER_KEY_FILE"]
-    rubric_file     = exam_row["RUBRIC_FILE"]
-    total_marks     = int(exam_row["TOTAL_MARKS"])
-
-    if not answer_key_file:
-        st.error("This exam has no answer key file on record. Please re-create the exam.")
+    if not raw:
+        st.error("AI returned an empty response. Please try again.")
         st.stop()
-    if not rubric_file:
-        st.error("This exam has no rubric file on record. Please re-create the exam.")
-        st.stop()
-
-    # Step 3 — OCR the answer key (from stage)
-    with st.spinner("Running OCR on answer key via Snowflake Cortex..."):
-        answer_key_text = ocr_from_stage(answer_key_file)
-
-    if not answer_key_text.strip():
-        st.error("Could not extract text from the answer key PDF. Check the file in the stage.")
-        st.stop()
-
-    st.toast(f"Answer key: {len(answer_key_text)} characters extracted")
-
-    # Step 4 — OCR the rubric (from stage)
-    with st.spinner("Running OCR on rubric via Snowflake Cortex..."):
-        rubric_text = ocr_from_stage(rubric_file)
-
-    if not rubric_text.strip():
-        st.error("Could not extract text from the rubric PDF. Check the file in the stage.")
-        st.stop()
-
-    st.toast(f"Rubric: {len(rubric_text)} characters extracted")
-
-    # Step 5 — OCR the student answer (from stage)
-    with st.spinner("Running OCR on student answer via Snowflake Cortex..."):
-        student_answer_text = ocr_from_stage(student_stage_path)
-
-    if not student_answer_text.strip():
-        st.error("Could not extract text from the student answer PDF. The file may be blank or unreadable.")
-        st.stop()
-
-    st.toast(f"Student answer: {len(student_answer_text)} characters extracted")
-
-    # Step 6 — AI evaluation
-    prompt = build_prompt(answer_key_text, rubric_text, total_marks, student_answer_text)
-
-    with st.spinner(f"AI ({selected_model}) evaluating... this may take a moment."):
-        response = session.sql(
-            "SELECT SNOWFLAKE.CORTEX.AI_COMPLETE(?, ?) AS response",
-            params=[selected_model, prompt],
-        ).collect()
-
-    raw = response[0]["RESPONSE"]
-    if isinstance(raw, str):
-        raw = raw.replace("\\n", "\n").replace("\\t", "\t").replace('\\"', '"')
-        if raw.startswith('"') and raw.endswith('"'):
-            raw = raw[1:-1]
 
     evaluation = parse_response(raw)
 
     if evaluation is None:
-        st.error("Could not parse the AI response as JSON. Raw output below.")
+        st.error("Could not parse the AI response as JSON. Raw output shown below.")
         st.code(raw)
         st.stop()
 
@@ -296,43 +284,12 @@ if st.button("🚀 Run AI Evaluation", type="primary", use_container_width=True)
     st.subheader("📊 Evaluation Results")
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Marks",      f"{marks_obtained} / {marks_possible}")
+    c1.metric("Marks",      f"{int(marks_obtained)} / {int(marks_possible)}")
     c2.metric("Percentage", f"{percentage:.1f}%")
     c3.metric("Grade",      grade)
     c4.metric("Student",    student_name)
 
-    questions = evaluation.get("questions", [])
-    if questions:
-        st.markdown("#### Question-wise Breakdown")
-        for q in questions:
-            badge = {"correct": "🟢", "partially_correct": "🟡", "incorrect": "🔴"}.get(
-                q.get("correctness", ""), "⚪"
-            )
-            with st.expander(
-                f"Q{q.get('question_number','?')}: {q.get('topic','')}  —  "
-                f"{badge} {q.get('marks_obtained',0)}/{q.get('max_marks',0)} marks",
-                expanded=False,
-            ):
-                st.write(f"**Status:** {q.get('correctness','').replace('_',' ').title()}")
-                st.write(f"**Feedback:** {q.get('feedback','')}")
-
-    st.markdown("#### Overall Feedback")
-    st.info(evaluation.get("overall_feedback", "N/A"))
-
-    cols = st.columns(2)
-    with cols[0]:
-        st.markdown("**Strengths**")
-        for s in evaluation.get("strengths", []):
-            st.write(f"- {s}")
-    with cols[1]:
-        st.markdown("**Areas for Improvement**")
-        for a in evaluation.get("areas_for_improvement", []):
-            st.write(f"- {a}")
-
-    if evaluation.get("recommendations"):
-        st.markdown("**Recommendations**")
-        for r in evaluation["recommendations"]:
-            st.write(f"- {r}")
+    render_evaluation_detail(evaluation)
 
     # ── Save to Snowflake ─────────────────────────────────────────────────────
     with st.spinner("Saving evaluation..."):

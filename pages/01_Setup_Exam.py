@@ -1,39 +1,16 @@
-import io
-import re
-import time
-
 import streamlit as st
+
+from utils import (
+    DB, SCHEMA, MAX_SIZE_CLAUDE_MB, MAX_SIZE_GEMINI_MB,
+    upload_to_stage, show_file_size,
+)
 
 st.title("📋 Setup Exam")
 st.caption("Upload the model answer PDF and define the marking rubric.")
 
-# ── Snowflake session ─────────────────────────────────────────────────────────
 session = st.session_state.get_snowflake_session()
 
-DB, SCHEMA = "IITJ", "MH"
-STAGE = f"@{DB}.{SCHEMA}.HW_EVAL_STAGE"
-
-
-def safe_name(filename: str) -> str:
-    """Sanitise filename — keep alphanumeric, dot, dash, underscore only."""
-    stem = re.sub(r"[^a-zA-Z0-9_\-.]", "_", filename)
-    return f"{int(time.time())}_{stem}"
-
-
-def upload_to_stage(uploaded_file, subfolder: str) -> str:
-    """Upload an in-memory file to a stage subfolder; return the relative path."""
-    fname   = safe_name(uploaded_file.name)
-    stage_path = f"{subfolder}/{fname}"
-    session.file.put_stream(
-        io.BytesIO(uploaded_file.getvalue()),
-        f"{STAGE}/{stage_path}",
-        overwrite=True,
-        auto_compress=False,
-    )
-    return stage_path
-
-
-# ── Form ──────────────────────────────────────────────────────────────────────
+# ── Exam Details ──────────────────────────────────────────────────────────────
 with st.container(border=True):
     st.subheader("Exam Details")
     col1, col2 = st.columns(2)
@@ -49,14 +26,13 @@ with st.container(border=True):
     st.subheader("Model / Correct Answer")
     st.info(
         "Upload the answer key as a PDF (typed or scanned). "
-        "Snowflake Cortex will perform OCR at evaluation time — "
-        "no local text extraction needed."
+        "Snowflake Cortex AI reads it directly alongside the student answer — "
+        f"no OCR needed. Keep under {MAX_SIZE_CLAUDE_MB} MB for Claude models, "
+        f"{MAX_SIZE_GEMINI_MB:.0f} MB for Gemini."
     )
-    answer_file = st.file_uploader(
-        "Upload answer-key PDF *", type=["pdf"], key="answer_pdf"
-    )
+    answer_file = st.file_uploader("Upload answer-key PDF *", type=["pdf"], key="answer_pdf")
     if answer_file:
-        st.success(f"Ready to upload: **{answer_file.name}**  ({answer_file.size / 1024:.1f} KB)")
+        show_file_size(answer_file)
 
 st.markdown("---")
 
@@ -66,13 +42,11 @@ with st.container(border=True):
     total_marks = st.number_input("Total Marks", min_value=1, value=100, step=5)
     st.info(
         "Upload the rubric / marking scheme as a PDF. "
-        "Snowflake Cortex will OCR it at evaluation time."
+        "Snowflake Cortex reads it directly at evaluation time — no OCR step required."
     )
-    rubric_file = st.file_uploader(
-        "Upload rubric PDF *", type=["pdf"], key="rubric_pdf"
-    )
+    rubric_file = st.file_uploader("Upload rubric PDF *", type=["pdf"], key="rubric_pdf")
     if rubric_file:
-        st.success(f"Ready to upload: **{rubric_file.name}**  ({rubric_file.size / 1024:.1f} KB)")
+        show_file_size(rubric_file)
 
 st.markdown("---")
 

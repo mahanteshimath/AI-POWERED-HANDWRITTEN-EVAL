@@ -1,6 +1,6 @@
 # AI-Powered Handwritten Answer Evaluation System
 
-An end-to-end Streamlit application that uses **Snowflake Cortex AI** to automatically evaluate handwritten student answer sheets against an answer key and marking rubric — providing marks, grades, question-wise feedback, and recommendations.
+An end-to-end Streamlit application that uses **Snowflake Cortex AI** to automatically evaluate handwritten student answer sheets against an answer key and marking rubric — providing marks, grades, question-wise feedback, strengths, and recommendations.
 
 ---
 
@@ -11,37 +11,44 @@ An end-to-end Streamlit application that uses **Snowflake Cortex AI** to automat
 | Frontend | Streamlit (multi-page) |
 | Database & Storage | Snowflake (`IITJ.MH`) |
 | File Storage | Snowflake Stage (`HW_EVAL_STAGE`, SSE-encrypted) |
-| OCR | Snowflake Cortex `AI_PARSE_DOCUMENT` |
-| LLM Evaluation | Snowflake Cortex `AI_COMPLETE` (`claude-sonnet-4-6`) |
+| AI Evaluation | Snowflake Cortex `AI_COMPLETE` via `PROMPT()` |
+| Default Model | `gemini-3-pro` (10 MB PDF limit) |
+| Alternate Model | `claude-sonnet-4-5` (4.5 MB PDF limit) |
 
-All OCR and AI inference happens **inside Snowflake** — no external APIs, no local text extraction.
+All three PDFs — answer key, rubric, and student handwritten answer — are passed **directly** to the AI model inside a single `AI_COMPLETE` call via Snowflake's `PROMPT()` function. There is **no separate OCR step**.
 
 ---
 
 ## Architecture
 
 ```
-┌────────────────────────────────────────────────────┐
-│                  Streamlit App                     │
-│                                                    │
-│  📋 Setup Exam  │  🎯 Evaluate  │  📊 Results      │
-└────────┬───────────────┬──────────────────────────-┘
+┌─────────────────────────────────────────────────────┐
+│                   Streamlit App                      │
+│                                                      │
+│  📋 Setup Exam  │  🎯 Evaluate  │  📊 Results        │
+└────────┬───────────────┬────────────────────────────-┘
          │               │
          ▼               ▼
-┌─────────────────────────────────────────────────-──┐
-│                  Snowflake                         │
-│                                                    │
-│  HW_EVAL_STAGE/                                    │
-│  ├── answer_keys/   (answer key PDFs)              │
-│  ├── rubrics/       (rubric PDFs)                  │
-│  └── student_answers/ (student answer PDFs)        │
-│                                                    │
-│  AI_PARSE_DOCUMENT(TO_FILE(...), {mode:'OCR'})     │
-│       ↓ extracted text                             │
-│  AI_COMPLETE('claude-sonnet-4-6', prompt)          │
-│       ↓ JSON evaluation                            │
-│  HW_EVALUATIONS  (results stored)                  │
-└────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────┐
+│                    Snowflake                         │
+│                                                      │
+│  HW_EVAL_STAGE/                                      │
+│  ├── answer_keys/      (answer key PDFs)             │
+│  ├── rubrics/          (rubric PDFs)                 │
+│  └── student_answers/  (student answer PDFs)         │
+│                                                      │
+│  AI_COMPLETE(                                        │
+│    'gemini-3-pro',                                   │
+│    PROMPT(                                           │
+│      '...prompt...',                                 │
+│      TO_FILE(STAGE, 'answer_keys/...'),   ← {0}     │
+│      TO_FILE(STAGE, 'rubrics/...'),       ← {1}     │
+│      TO_FILE(STAGE, 'student_answers/…')  ← {2}     │
+│    )                                                 │
+│  )                                                   │
+│       ↓ structured JSON evaluation                  │
+│  HW_EVALUATIONS  (results stored)                    │
+└─────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -49,36 +56,49 @@ All OCR and AI inference happens **inside Snowflake** — no external APIs, no l
 ## Evaluation Pipeline
 
 ```
-Teacher sets up exam:
-  answer_key.pdf  ──► Snowflake Stage (answer_keys/)
-  rubric.pdf      ──► Snowflake Stage (rubrics/)
+Teacher setup (once per exam):
+  answer_key.pdf  ──► Snowflake Stage  (answer_keys/)
+  rubric.pdf      ──► Snowflake Stage  (rubrics/)
 
 Student evaluation:
   student_answer.pdf ──► Snowflake Stage (student_answers/)
-                              │
-               ┌──────────────┼──────────────┐
-               ▼              ▼              ▼
-        OCR answer key   OCR rubric   OCR student answer
-        (AI_PARSE_DOC)  (AI_PARSE_DOC) (AI_PARSE_DOC)
-               └──────────────┼──────────────┘
-                               ▼
-                   AI_COMPLETE (claude-sonnet-4-6)
-                               ▼
-              Structured JSON evaluation result
-                               ▼
-              Display + Save to HW_EVALUATIONS
+                                │
+                                ▼
+              Single AI_COMPLETE call via PROMPT()
+              ┌─────────────────────────────────┐
+              │  {0} answer key PDF             │
+              │  {1} rubric PDF                 │
+              │  {2} student handwritten PDF    │
+              └─────────────┬───────────────────┘
+                            │
+                            ▼
+             Structured JSON evaluation result
+             ┌──────────────────────────────────┐
+             │  per-question marks & feedback   │
+             │  total marks / percentage / grade│
+             │  strengths & recommendations     │
+             └──────────────┬───────────────────┘
+                            │
+                ┌───────────┴───────────┐
+                ▼                       ▼
+       Display rich UI          Save to HW_EVALUATIONS
 ```
 
 ---
 
 ## Features
 
-- **PDF-native** — upload scanned handwritten answer sheets directly; no manual transcription
-- **OCR in Snowflake** — `AI_PARSE_DOCUMENT` with `page_split: TRUE` handles multi-page documents and large PDFs
-- **Structured AI grading** — per-question marks, correctness status, and feedback
-- **Question-wise breakdown** — 🟢 Correct / 🟡 Partial / 🔴 Incorrect badges per question
-- **Strengths & recommendations** — actionable improvement suggestions per student
+- **PDF-native evaluation** — upload scanned handwritten answer sheets directly; no manual transcription or OCR pre-processing
+- **Single AI_COMPLETE call** — all three PDFs (answer key, rubric, student answer) are sent together in one request via Snowflake's `PROMPT()` multimodal function
+- **Structured JSON grading** — per-question marks, correctness status, and specific feedback
+- **Rich results UI**
+  - 🟢 Correct / 🟡 Partially Correct / 🔴 Incorrect badge per question
+  - Progress bar showing marks scored per question
+  - `st.success` (green) cards for Strengths
+  - `st.warning` (yellow) cards for Areas for Improvement
+  - `st.info` (blue) cards for Recommendations
 - **Results dashboard** — filter by exam, student name, and grade; grade distribution chart
+- **Auto schema migration** — Snowflake tables and stage are created automatically on first run
 - **Dual-environment auth** — runs locally (via `secrets.toml`) or natively inside Streamlit in Snowflake
 
 ---
@@ -97,12 +117,23 @@ Student evaluation:
 
 ---
 
-## Snowflake Objects Created (auto on first run)
+## Supported AI Models
+
+| Model | PDF Size Limit | Notes |
+|---|---|---|
+| `gemini-3-pro` | **10 MB** | **Default** — best for large scanned answer sheets |
+| `claude-sonnet-4-5` | **4.5 MB** | Alternate option — Claude 3.5 Sonnet via Snowflake Cortex |
+
+Select the model from the **sidebar** on the Evaluate page. Use `gemini-3-pro` for high-resolution scans; switch to `claude-sonnet-4-5` for smaller, well-formatted PDFs.
+
+---
+
+## Snowflake Objects (auto-created on first run)
 
 | Object | Type | Purpose |
 |---|---|---|
-| `IITJ.MH.HW_EVAL_STAGE` | Stage (SSE) | Stores all uploaded PDFs |
-| `IITJ.MH.HW_EXAMS` | Table | Exam metadata + stage file paths |
+| `IITJ.MH.HW_EVAL_STAGE` | Stage (SSE-encrypted) | Stores all uploaded PDFs |
+| `IITJ.MH.HW_EXAMS` | Table | Exam metadata and stage file paths |
 | `IITJ.MH.HW_EVALUATIONS` | Table | AI evaluation results per student |
 
 ### `HW_EXAMS` schema
@@ -112,8 +143,8 @@ Student evaluation:
 | `EXAM_ID` | NUMBER (autoincrement) | Primary key |
 | `EXAM_NAME` | VARCHAR | Name of the exam |
 | `SUBJECT` | VARCHAR | Subject / course name |
-| `ANSWER_KEY_FILE` | VARCHAR | Stage path to answer key PDF |
-| `RUBRIC_FILE` | VARCHAR | Stage path to rubric PDF |
+| `ANSWER_KEY_FILE` | VARCHAR | Stage-relative path to answer key PDF |
+| `RUBRIC_FILE` | VARCHAR | Stage-relative path to rubric PDF |
 | `TOTAL_MARKS` | NUMBER | Maximum marks for the exam |
 | `CREATED_AT` | TIMESTAMP_NTZ | Creation timestamp |
 
@@ -124,8 +155,8 @@ Student evaluation:
 | `EVAL_ID` | NUMBER (autoincrement) | Primary key |
 | `EXAM_ID` | NUMBER | Foreign key → `HW_EXAMS` |
 | `STUDENT_NAME` | VARCHAR | Student's name |
-| `STUDENT_ANSWER_FILE` | VARCHAR | Stage path to student's answer PDF |
-| `AI_EVALUATION` | VARCHAR(16M) | Full JSON evaluation from Claude |
+| `STUDENT_ANSWER_FILE` | VARCHAR | Stage-relative path to student's answer PDF |
+| `AI_EVALUATION` | VARCHAR(16M) | Full JSON evaluation from the AI model |
 | `TOTAL_MARKS_OBTAINED` | FLOAT | Marks awarded |
 | `TOTAL_MARKS_POSSIBLE` | FLOAT | Maximum marks |
 | `PERCENTAGE` | FLOAT | Score percentage |
@@ -138,13 +169,14 @@ Student evaluation:
 
 ```
 AI POWERED HANDWRITTEN EVAL/
-├── Home.py                    # Entry point: Snowflake connection, DB/stage setup, navigation
+├── Home.py                    # Entry point: Snowflake connection, DB/stage/table setup
 ├── pages/
-│   ├── 01_Setup_Exam.py       # Upload answer key PDF + rubric PDF, define total marks
-│   ├── 02_Evaluate.py         # Upload student PDF, run OCR + AI evaluation
-│   └── 03_Results.py          # Results dashboard with filters and grade distribution
+│   ├── 01_Setup_Exam.py       # Upload answer key + rubric PDFs, define exam metadata
+│   ├── 02_Evaluate.py         # Upload student PDF, run AI_COMPLETE, display + save results
+│   └── 03_Results.py          # Results dashboard: filters, metrics, grade distribution
+├── utils.py                   # Shared constants, file helpers, grade logic, UI renderer
 ├── .streamlit/
-│   └── secrets.toml           # Snowflake credentials (local only, gitignored)
+│   └── secrets.toml           # Snowflake credentials (local only — gitignored)
 ├── requirements.txt
 └── .gitignore
 ```
@@ -157,8 +189,8 @@ AI POWERED HANDWRITTEN EVAL/
 
 - Python 3.9+
 - Conda (recommended) or pip
-- Snowflake account with Cortex AI enabled
-- `ACCOUNTADMIN` role (or role with `CREATE STAGE`, `CREATE TABLE`, and Cortex grants)
+- Snowflake account with **Cortex AI** enabled
+- Role with `CREATE STAGE`, `CREATE TABLE`, and Cortex `AI_COMPLETE` grants (e.g. `ACCOUNTADMIN`)
 
 ### 1. Clone and install dependencies
 
@@ -194,7 +226,7 @@ streamlit run Home.py
 
 Open **http://localhost:8501** in your browser.
 
-On first launch, the app will automatically create the Snowflake stage and tables.
+On first launch the app automatically creates the Snowflake stage and tables.
 
 ---
 
@@ -204,41 +236,40 @@ On first launch, the app will automatically create the Snowflake stage and table
 
 1. Enter the exam name and subject
 2. Upload the **answer key PDF** (typed or scanned)
-3. Upload the **rubric / marking scheme PDF**
-4. Set the total marks
-5. Click **Save Exam** — both PDFs are stored securely in Snowflake Stage
+3. Upload the **marking rubric PDF**
+4. Set the total marks available
+5. Click **Save Exam** — both PDFs are stored in Snowflake Stage
 
 ### Step 2 — Evaluate Student (`🎯 Evaluate`)
 
 1. Select the exam from the dropdown
 2. Enter the student's name
 3. Upload the **student's handwritten answer sheet** as a PDF
-4. Click **Run AI Evaluation**
+4. (Optional) Switch the AI model in the sidebar
+5. Click **Run AI Evaluation**
 
 The system will:
 - Upload the answer sheet to Snowflake Stage
-- Run `AI_PARSE_DOCUMENT` OCR on all three PDFs (answer key, rubric, student answer)
-- Send the extracted texts to `claude-sonnet-4-6` via `AI_COMPLETE`
-- Display marks, grade, per-question breakdown, strengths, and recommendations
+- Call `AI_COMPLETE` with all three PDFs passed via `PROMPT()` — no OCR step
+- Parse the structured JSON response
+- Display a rich evaluation report — per-question breakdown, overall feedback, strengths, and recommendations
 - Save the full evaluation to `HW_EVALUATIONS`
 
 ### Step 3 — View Results (`📊 Results`)
 
 - Filter evaluations by exam, student name, or grade
-- View summary metrics: total evaluations, average marks, average percentage
-- Drill into any evaluation for the full question-wise breakdown
-- Grade distribution bar chart
+- View summary metrics: total evaluations, average marks, average percentage, pass rate
+- Drill into any individual evaluation for the full question-wise breakdown
+- View grade distribution as a bar chart
 
 ---
 
-## Supported LLM Models
+## Notes
 
-| Model | Description |
-|---|---|
-| `claude-sonnet-4-6` | Default — latest, highest accuracy |
-| `claude-3-5-sonnet` | Fallback option |
-
-Model can be switched from the sidebar on the Evaluate page.
+- **Scan quality**: Handwritten PDFs work best when scanned at ≥ 300 DPI
+- **File size**: For large answer sheets (> 4.5 MB), use `gemini-3-pro` (supports up to 10 MB)
+- **Snowflake Native App**: Compatible with Streamlit in Snowflake — uses `get_active_session()` when available, with `secrets.toml` as local fallback
+- **File naming**: All uploaded files are prefixed with a Unix timestamp to prevent name collisions in the stage
 
 ---
 
@@ -248,12 +279,3 @@ Model can be switched from the sidebar on the Evaluate page.
 streamlit
 snowflake-snowpark-python
 ```
-
----
-
-## Notes
-
-- **Handwritten PDFs**: Scanned PDFs work best when scanned at ≥ 300 DPI
-- **Large documents**: `page_split: TRUE` in `AI_PARSE_DOCUMENT` automatically handles multi-page PDFs that would otherwise exceed Cortex token limits
-- **Snowflake Native App**: The app is compatible with Streamlit in Snowflake — `get_active_session()` is used when available, with local `secrets.toml` as fallback
-- **File naming**: All uploaded files are prefixed with a Unix timestamp to prevent name collisions in the stage

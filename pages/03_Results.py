@@ -1,32 +1,62 @@
-import streamlit as st
 import json
+
+import streamlit as st
+
+from utils import DB, SCHEMA, GRADE_ORDER, render_evaluation_detail
 
 st.title("📊 Evaluation Results")
 st.caption("View and analyse all student evaluations.")
 
-# ── Snowflake session ────────────────────────────────────────────────────────
 session = st.session_state.get_snowflake_session()
 
-DB, SCHEMA = "IITJ", "MH"
 
-# ── Filters ──────────────────────────────────────────────────────────────────
+# ── Cached loaders ────────────────────────────────────────────────────────────
+
+@st.cache_data(ttl=60, show_spinner=False)
+def load_exam_list(_session):
+    return [
+        r.as_dict() if hasattr(r, "as_dict") else dict(r)
+        for r in _session.sql(
+            f"SELECT DISTINCT EXAM_ID, EXAM_NAME FROM {DB}.{SCHEMA}.HW_EXAMS ORDER BY EXAM_NAME"
+        ).collect()
+    ]
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_evaluation(_session, eval_id: int) -> dict | None:
+    """Fetch the AI_EVALUATION JSON for a single record — called only when user selects it."""
+    rows = _session.sql(
+        f"SELECT AI_EVALUATION FROM {DB}.{SCHEMA}.HW_EVALUATIONS WHERE EVAL_ID = ?",
+        params=[eval_id],
+    ).collect()
+    if not rows:
+        return None
+    raw = rows[0]["AI_EVALUATION"]
+    if isinstance(raw, dict):
+        return raw
+    try:
+        return json.loads(raw) if isinstance(raw, str) else None
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+
+# ── Filters ───────────────────────────────────────────────────────────────────
 with st.container(border=True):
     col1, col2, col3 = st.columns(3)
 
     with col1:
-        exams = session.sql(
-            f"SELECT DISTINCT EXAM_ID, EXAM_NAME FROM {DB}.{SCHEMA}.HW_EXAMS ORDER BY EXAM_NAME"
-        ).collect()
-        exam_map = {r["EXAM_NAME"]: r["EXAM_ID"] for r in exams}
+        exams    = load_exam_list(session)
+        exam_map = {f"{r['EXAM_NAME']} [#{r['EXAM_ID']}]": r["EXAM_ID"] for r in exams}
         exam_filter = st.selectbox("Exam", ["All"] + list(exam_map.keys()))
 
     with col2:
         student_filter = st.text_input("Student name contains", placeholder="e.g. Rahul")
 
     with col3:
-        grade_filter = st.selectbox("Grade", ["All", "A+", "A", "B+", "B", "C", "D", "F"])
+        # Uses GRADE_ORDER — single source of truth for the grade list
+        grade_filter = st.selectbox("Grade", ["All"] + GRADE_ORDER)
 
-# ── Build query ──────────────────────────────────────────────────────────────
+# ── Build query — AI_EVALUATION intentionally excluded; fetched on-demand ─────
 where, params = [], []
 
 if exam_filter != "All":
@@ -53,7 +83,6 @@ query = f"""
         e.TOTAL_MARKS_POSSIBLE,
         e.PERCENTAGE,
         e.GRADE,
-        e.AI_EVALUATION,
         e.EVALUATED_AT
     FROM {DB}.{SCHEMA}.HW_EVALUATIONS e
     JOIN {DB}.{SCHEMA}.HW_EXAMS x ON e.EXAM_ID = x.EXAM_ID
@@ -68,110 +97,83 @@ if not rows:
     st.info("No evaluations found. Evaluate a student on the **Evaluate** page first.")
     st.stop()
 
-# ── Summary metrics ──────────────────────────────────────────────────────────
-data = [r.as_dict() if hasattr(r, "as_dict") else dict(r) for r in rows]
+# ── Single-pass: build all aggregates, table rows, and dropdown options ───────
+total_evals  = 0
+sum_pct      = 0.0
+sum_marks    = 0.0
+pass_count   = 0
+grade_counts = {g: 0 for g in GRADE_ORDER}
+table_data   = []
+eval_options = {}   # label → EVAL_ID
+eval_records = {}   # EVAL_ID → record dict (for detail metrics)
 
-total_evals = len(data)
-avg_pct = sum(d["PERCENTAGE"] for d in data) / total_evals if total_evals else 0
-avg_marks = sum(d["TOTAL_MARKS_OBTAINED"] for d in data) / total_evals if total_evals else 0
+for r in rows:
+    d   = r.as_dict() if hasattr(r, "as_dict") else dict(r)
+    pct = d["PERCENTAGE"] or 0.0
+    g   = d.get("GRADE", "")
 
+    total_evals += 1
+    sum_pct     += pct
+    sum_marks   += (d["TOTAL_MARKS_OBTAINED"] or 0.0)
+    if pct >= 50:
+        pass_count += 1
+    if g in grade_counts:
+        grade_counts[g] += 1
+
+    table_data.append({
+        "Student":      d["STUDENT_NAME"],
+        "Exam":         d["EXAM_NAME"],
+        "Subject":      d["SUBJECT"] or "",
+        "Marks":        f"{int(d['TOTAL_MARKS_OBTAINED'] or 0)}/{int(d['TOTAL_MARKS_POSSIBLE'] or 0)}",
+        "Percentage":   f"{pct:.1f}%",
+        "Grade":        g,
+        "Evaluated At": str(d["EVALUATED_AT"]),
+    })
+
+    label             = f"[#{d['EVAL_ID']}] {d['STUDENT_NAME']} — {d['EXAM_NAME']} ({g})"
+    eval_options[label] = d["EVAL_ID"]
+    eval_records[d["EVAL_ID"]] = d
+
+avg_pct   = sum_pct   / total_evals
+avg_marks = sum_marks / total_evals
+pass_rate = pass_count / total_evals * 100
+
+# ── Summary metrics ───────────────────────────────────────────────────────────
 m1, m2, m3, m4 = st.columns(4)
 m1.metric("Total Evaluations", total_evals)
-m2.metric("Avg Marks", f"{avg_marks:.1f}")
-m3.metric("Avg %", f"{avg_pct:.1f}%")
-m4.metric("Top Grade", data[0]["GRADE"] if data else "N/A")
+m2.metric("Avg Marks",         f"{avg_marks:.1f}")
+m3.metric("Avg %",             f"{avg_pct:.1f}%")
+m4.metric("Pass Rate (≥50%)",  f"{pass_rate:.0f}%")
 
 st.markdown("---")
 
-# ── Results table ────────────────────────────────────────────────────────────
+# ── Results table ─────────────────────────────────────────────────────────────
 st.subheader("All Evaluations")
-table_data = [
-    {
-        "Student": d["STUDENT_NAME"],
-        "Exam": d["EXAM_NAME"],
-        "Subject": d["SUBJECT"] or "",
-        "Marks": f"{d['TOTAL_MARKS_OBTAINED']}/{d['TOTAL_MARKS_POSSIBLE']}",
-        "Percentage": f"{d['PERCENTAGE']:.1f}%",
-        "Grade": d["GRADE"],
-        "Evaluated At": str(d["EVALUATED_AT"]),
-    }
-    for d in data
-]
 st.dataframe(table_data, use_container_width=True, hide_index=True)
 
 st.markdown("---")
 
-# ── Detailed view ────────────────────────────────────────────────────────────
+# ── Detailed view — loads AI_EVALUATION only for the selected record ──────────
 st.subheader("Detailed Evaluation")
 
-eval_options = {
-    f"{d['STUDENT_NAME']} — {d['EXAM_NAME']} ({d['GRADE']})": d for d in data
-}
-chosen = st.selectbox("Select an evaluation", list(eval_options.keys()))
-record = eval_options[chosen]
-
-try:
-    evaluation = json.loads(record["AI_EVALUATION"]) if isinstance(record["AI_EVALUATION"], str) else record["AI_EVALUATION"]
-except (json.JSONDecodeError, TypeError):
-    evaluation = None
+chosen     = st.selectbox("Select an evaluation", list(eval_options.keys()))
+eval_id    = eval_options[chosen]
+record     = eval_records[eval_id]
+evaluation = load_evaluation(session, eval_id)
 
 if evaluation is None:
-    st.warning("Could not parse evaluation data.")
+    st.warning("Could not load evaluation data.")
     st.stop()
 
-# Metrics
 c1, c2, c3 = st.columns(3)
-c1.metric("Marks", f"{record['TOTAL_MARKS_OBTAINED']} / {record['TOTAL_MARKS_POSSIBLE']}")
-c2.metric("Percentage", f"{record['PERCENTAGE']:.1f}%")
-c3.metric("Grade", record["GRADE"])
+c1.metric("Marks",      f"{int(record['TOTAL_MARKS_OBTAINED'] or 0)} / {int(record['TOTAL_MARKS_POSSIBLE'] or 0)}")
+c2.metric("Percentage", f"{(record['PERCENTAGE'] or 0.0):.1f}%")
+c3.metric("Grade",      record["GRADE"])
 
-# Questions
-questions = evaluation.get("questions", [])
-if questions:
-    st.markdown("#### Question-wise Breakdown")
-    for q in questions:
-        qnum = q.get("question_number", "?")
-        topic = q.get("topic", "")
-        m_obt = q.get("marks_obtained", 0)
-        m_max = q.get("max_marks", 0)
-        correctness = q.get("correctness", "")
-        feedback = q.get("feedback", "")
+render_evaluation_detail(evaluation)
 
-        badge = {"correct": "🟢", "partially_correct": "🟡", "incorrect": "🔴"}.get(correctness, "⚪")
-
-        with st.expander(f"Q{qnum}: {topic}  —  {badge} {m_obt}/{m_max} marks"):
-            st.write(f"**Status:** {correctness.replace('_', ' ').title()}")
-            st.write(f"**Feedback:** {feedback}")
-
-# Overall
-st.markdown("#### Overall Feedback")
-st.info(evaluation.get("overall_feedback", "N/A"))
-
-cols = st.columns(2)
-with cols[0]:
-    st.markdown("**Strengths**")
-    for s in evaluation.get("strengths", []):
-        st.write(f"- {s}")
-with cols[1]:
-    st.markdown("**Areas for Improvement**")
-    for a in evaluation.get("areas_for_improvement", []):
-        st.write(f"- {a}")
-
-if evaluation.get("recommendations"):
-    st.markdown("**Recommendations**")
-    for r in evaluation["recommendations"]:
-        st.write(f"- {r}")
-
-# ── Grade distribution ───────────────────────────────────────────────────────
+# ── Grade distribution ────────────────────────────────────────────────────────
 st.markdown("---")
 st.subheader("Grade Distribution")
-grade_counts = {}
-for d in data:
-    g = d["GRADE"]
-    grade_counts[g] = grade_counts.get(g, 0) + 1
-
-grade_order = ["A+", "A", "B+", "B", "C", "D", "F"]
-chart_data = {g: grade_counts.get(g, 0) for g in grade_order if g in grade_counts}
-
-if chart_data:
-    st.bar_chart(chart_data)
+if any(v > 0 for v in grade_counts.values()):
+    st.bar_chart(grade_counts)
