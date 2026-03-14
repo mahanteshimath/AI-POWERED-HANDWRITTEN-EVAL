@@ -1,5 +1,6 @@
 import json
 
+import pandas as pd
 import streamlit as st
 
 from utils import DB, SCHEMA, GRADE_ORDER, render_evaluation_detail, show_footer
@@ -175,7 +176,30 @@ render_evaluation_detail(evaluation)
 # ── Grade distribution ────────────────────────────────────────────────────────
 st.markdown("---")
 st.subheader("Grade Distribution")
+
 if any(v > 0 for v in grade_counts.values()):
-    st.bar_chart(grade_counts)
+    col_bar, col_line = st.columns(2)
+
+    with col_bar:
+        st.caption("Grade breakdown (count per grade)")
+        st.bar_chart(grade_counts, color="#2C1E5B")
+
+    with col_line:
+        st.caption("Student scores — sorted by % (hover to see name & grade)")
+        sorted_rows = sorted(
+            table_data,
+            key=lambda x: float(x["Percentage"].rstrip("%")),
+            reverse=True,
+        )
+        scores_df = pd.DataFrame(
+            [
+                {
+                    "Student": f"{d['Student']} ({d['Grade']})",
+                    "Score (%)": float(d["Percentage"].rstrip("%")),
+                }
+                for d in sorted_rows
+            ]
+        ).set_index("Student")
+        st.line_chart(scores_df, y="Score (%)")
 
 show_footer()
