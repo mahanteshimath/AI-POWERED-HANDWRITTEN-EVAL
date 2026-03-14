@@ -150,7 +150,7 @@ st.markdown("---")
 
 # ── Results table ─────────────────────────────────────────────────────────────
 st.subheader("All Evaluations")
-st.dataframe(table_data, use_container_width=True, hide_index=True)
+st.dataframe(table_data, width="stretch", hide_index=True)
 
 st.markdown("---")
 

@@ -104,7 +104,7 @@ with st.container(border=True):
     ).collect()
     if rows:
         data = [r.as_dict() if hasattr(r, "as_dict") else dict(r) for r in rows]
-        st.dataframe(data, use_container_width=True, hide_index=True)
+        st.dataframe(data, width="stretch", hide_index=True)
     else:
         st.info("No exams created yet.")
 

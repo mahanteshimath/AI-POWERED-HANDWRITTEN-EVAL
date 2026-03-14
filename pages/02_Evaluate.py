@@ -234,7 +234,7 @@ with st.container(border=True):
 st.markdown("---")
 
 # ── 4. Evaluate ───────────────────────────────────────────────────────────────
-if st.button("🚀 Run AI Evaluation", type="primary", use_container_width=True):
+if st.button("🚀 Run AI Evaluation", type="primary", width="stretch"):
     if not student_name.strip():
         st.error("Student name is required.")
         st.stop()
