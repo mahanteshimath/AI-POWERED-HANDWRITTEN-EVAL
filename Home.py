@@ -102,6 +102,32 @@ with st.sidebar:
     except Exception as e:
         st.error(f"Connection lost: {e}")
 
+    st.markdown("---")
+    st.markdown("### How to use")
+    st.markdown(
+        """
+**1. 📋 Setup Exam**
+- Enter exam name & subject
+- Upload answer key PDF
+- Upload marking rubric PDF
+- Set total marks → **Save Exam**
+
+**2. 🎯 Evaluate**
+- Select exam
+- Enter student name
+- Upload student answer PDF
+- Choose AI model *(sidebar)*
+- Click **Run AI Evaluation**
+
+**3. 📊 Results**
+- Filter by exam / student / grade
+- View per-question breakdown
+- Check grade distribution chart
+"""
+    )
+    st.markdown("---")
+    st.caption("💡 Use **gemini-3-pro** for large scans (up to 10 MB). Switch to **claude-sonnet-4-5** for smaller PDFs (up to 4.5 MB).")
+
 # ── Navigation ────────────────────────────────────────────────────────────────
 pg = st.navigation(
     {
