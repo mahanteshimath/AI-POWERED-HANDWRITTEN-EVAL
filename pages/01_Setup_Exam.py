@@ -2,7 +2,7 @@ import streamlit as st
 
 from utils import (
     DB, SCHEMA, MAX_SIZE_CLAUDE_MB, MAX_SIZE_GEMINI_MB,
-    upload_to_stage, show_file_size,
+    upload_to_stage, show_file_size, show_footer,
 )
 
 st.title("📋 Setup Exam")
@@ -107,3 +107,5 @@ with st.container(border=True):
         st.dataframe(data, use_container_width=True, hide_index=True)
     else:
         st.info("No exams created yet.")
+
+show_footer()

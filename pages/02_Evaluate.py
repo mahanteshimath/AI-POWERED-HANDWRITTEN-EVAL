@@ -6,7 +6,7 @@ from utils import (
     DB, SCHEMA, STAGE,
     MAX_SIZE_CLAUDE_MB, MAX_SIZE_GEMINI_MB,
     upload_to_stage, show_file_size, validate_file_for_upload,
-    assign_grade, render_evaluation_detail,
+    assign_grade, render_evaluation_detail, show_footer,
 )
 
 st.title("🎯 Evaluate Student Answer")
@@ -313,3 +313,5 @@ if st.button("🚀 Run AI Evaluation", type="primary", use_container_width=True)
         ).collect()
 
     st.success("Evaluation saved!")
+
+show_footer()

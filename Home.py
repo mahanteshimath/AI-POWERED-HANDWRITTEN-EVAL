@@ -1,5 +1,6 @@
 import streamlit as st
 from snowflake.snowpark.context import get_active_session
+from utils import show_footer
 
 st.set_page_config(
     page_title="AI Handwritten Eval",
@@ -139,3 +140,4 @@ pg = st.navigation(
     }
 )
 pg.run()
+show_footer()

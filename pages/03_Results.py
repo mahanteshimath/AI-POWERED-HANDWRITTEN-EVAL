@@ -2,7 +2,7 @@ import json
 
 import streamlit as st
 
-from utils import DB, SCHEMA, GRADE_ORDER, render_evaluation_detail
+from utils import DB, SCHEMA, GRADE_ORDER, render_evaluation_detail, show_footer
 
 st.title("📊 Evaluation Results")
 st.caption("View and analyse all student evaluations.")
@@ -177,3 +177,5 @@ st.markdown("---")
 st.subheader("Grade Distribution")
 if any(v > 0 for v in grade_counts.values()):
     st.bar_chart(grade_counts)
+
+show_footer()

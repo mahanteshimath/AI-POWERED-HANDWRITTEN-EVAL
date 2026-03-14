@@ -22,6 +22,35 @@ GRADE_ORDER      = ["A+", "A", "B+", "B", "C", "D", "F"]
 GRADE_THRESHOLDS = [(90, "A+"), (80, "A"), (70, "B+"), (60, "B"), (50, "C"), (40, "D")]
 
 
+def show_footer() -> None:
+    """Inject a fixed branding footer at the bottom of every page."""
+    st.markdown(
+        """
+<style>
+.footer {
+    position: fixed;
+    left: 0;
+    bottom: 0;
+    width: 100%;
+    background-color: #2C1E5B;
+    color: white;
+    text-align: center;
+    z-index: 9999;
+    padding: 10px 0;
+    box-shadow: 0 -2px 10px rgba(0,0,0,0.3);
+}
+.footer p { margin: 0; }
+.footer a { color: white; text-decoration: none; }
+.footer a:hover { text-decoration: underline; }
+</style>
+<div class="footer">
+<p>Developed with ❤️ by <a href="https://bit.ly/atozaboutdata" target="_blank">MAHANTESH HIREMATH (M25AI2134@IITJ.AC.IN)</a></p>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+
 def assign_grade(pct: float) -> str:
     for threshold, grade in GRADE_THRESHOLDS:
         if pct >= threshold:
