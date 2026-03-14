@@ -21,67 +21,60 @@ All three PDFs — answer key, rubric, and student handwritten answer — are pa
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────┐
-│                   Streamlit App                      │
-│                                                      │
-│  📋 Setup Exam  │  🎯 Evaluate  │  📊 Results        │
-└────────┬───────────────┬────────────────────────────-┘
-         │               │
-         ▼               ▼
-┌─────────────────────────────────────────────────────┐
-│                    Snowflake                         │
-│                                                      │
-│  HW_EVAL_STAGE/                                      │
-│  ├── answer_keys/      (answer key PDFs)             │
-│  ├── rubrics/          (rubric PDFs)                 │
-│  └── student_answers/  (student answer PDFs)         │
-│                                                      │
-│  AI_COMPLETE(                                        │
-│    'gemini-3-pro',                                   │
-│    PROMPT(                                           │
-│      '...prompt...',                                 │
-│      TO_FILE(STAGE, 'answer_keys/...'),   ← {0}     │
-│      TO_FILE(STAGE, 'rubrics/...'),       ← {1}     │
-│      TO_FILE(STAGE, 'student_answers/…')  ← {2}     │
-│    )                                                 │
-│  )                                                   │
-│       ↓ structured JSON evaluation                  │
-│  HW_EVALUATIONS  (results stored)                    │
-└─────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+  subgraph APP[Streamlit App]
+    SE[📋 Setup Exam]
+    EV[🎯 Evaluate]
+    RS[📊 Results]
+  end
+
+  subgraph SNOW[Snowflake]
+    subgraph STAGE[HW_EVAL_STAGE]
+      AK[answer_keys/<br/>answer key PDFs]
+      RB[rubrics/<br/>rubric PDFs]
+      SA[student_answers/<br/>student answer PDFs]
+    end
+
+    AC["AI_COMPLETE('gemini-3-pro', PROMPT(...))<br/>{0}=answer key | {1}=rubric | {2}=student answer"]
+    JSON[structured JSON evaluation]
+    EVALS[HW_EVALUATIONS<br/>results stored]
+  end
+
+  SE --> AK
+  SE --> RB
+  EV --> SA
+  AK --> AC
+  RB --> AC
+  SA --> AC
+  AC --> JSON --> EVALS
+  EVALS --> RS
 ```
 
 ---
 
 ## Evaluation Pipeline
 
-```
-Teacher setup (once per exam):
-  answer_key.pdf  ──► Snowflake Stage  (answer_keys/)
-  rubric.pdf      ──► Snowflake Stage  (rubrics/)
+```mermaid
+flowchart TD
+  subgraph T[Teacher setup once per exam]
+    AKF[answer_key.pdf] --> AKS[Snowflake Stage answer_keys/]
+    RBF[rubric.pdf] --> RBS[Snowflake Stage rubrics/]
+  end
 
-Student evaluation:
-  student_answer.pdf ──► Snowflake Stage (student_answers/)
-                                │
-                                ▼
-              Single AI_COMPLETE call via PROMPT()
-              ┌─────────────────────────────────┐
-              │  {0} answer key PDF             │
-              │  {1} rubric PDF                 │
-              │  {2} student handwritten PDF    │
-              └─────────────┬───────────────────┘
-                            │
-                            ▼
-             Structured JSON evaluation result
-             ┌──────────────────────────────────┐
-             │  per-question marks & feedback   │
-             │  total marks / percentage / grade│
-             │  strengths & recommendations     │
-             └──────────────┬───────────────────┘
-                            │
-                ┌───────────┴───────────┐
-                ▼                       ▼
-       Display rich UI          Save to HW_EVALUATIONS
+  subgraph S[Student evaluation]
+    SAF[student_answer.pdf] --> SAS[Snowflake Stage student_answers/]
+  end
+
+  AKS --> CALL
+  RBS --> CALL
+  SAS --> CALL
+
+  CALL[Single AI_COMPLETE call via PROMPT()<br/>{0} answer key PDF<br/>{1} rubric PDF<br/>{2} student handwritten PDF]
+  CALL --> JSON[Structured JSON evaluation result<br/>per-question marks and feedback<br/>total marks, percentage, grade<br/>strengths and recommendations]
+
+  JSON --> UI[Display rich UI]
+  JSON --> SAVE[Save to HW_EVALUATIONS]
 ```
 
 ---
