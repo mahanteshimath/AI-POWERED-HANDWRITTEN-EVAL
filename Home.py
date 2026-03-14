@@ -99,7 +99,7 @@ st.session_state.get_snowflake_session = get_snowflake_session
 with st.sidebar:
     try:
         get_snowflake_session().sql("SELECT 1").collect()
-        st.success("Snowflake connected")
+        st.success("☁️connected")
     except Exception as e:
         st.error(f"Connection lost: {e}")
 
