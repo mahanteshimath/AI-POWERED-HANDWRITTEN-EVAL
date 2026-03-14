@@ -19,6 +19,14 @@ All three PDFs — answer key, rubric, and student handwritten answer — are pa
 
 ---
 
+## Quick Links
+
+- 🎥 Demo (3 min, 2x suggested): [https://youtu.be/y39a-aRiMmY](https://youtu.be/y39a-aRiMmY)
+- App Link: [https://handwritten-answer-evaluator.streamlit.app/](https://handwritten-answer-evaluator.streamlit.app/)
+- Code: [https://github.com/mahanteshimath/AI-POWERED-HANDWRITTEN-EVAL](https://github.com/mahanteshimath/AI-POWERED-HANDWRITTEN-EVAL)
+
+---
+
 ## Architecture
 
 ```mermaid
