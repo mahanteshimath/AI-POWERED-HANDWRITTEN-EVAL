@@ -1,3 +1,4 @@
+import io
 import json
 
 import pandas as pd
@@ -39,6 +40,14 @@ def load_evaluation(_session, eval_id: int) -> dict | None:
         return json.loads(raw) if isinstance(raw, str) else None
     except (json.JSONDecodeError, TypeError):
         return None
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def to_excel_bytes(df: pd.DataFrame) -> bytes:
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name="All Evaluations")
+    return buffer.getvalue()
 
 
 # ── Filters ───────────────────────────────────────────────────────────────────
@@ -150,7 +159,17 @@ st.markdown("---")
 
 # ── Results table ─────────────────────────────────────────────────────────────
 st.subheader("All Evaluations")
-st.dataframe(table_data, width="stretch", hide_index=True)
+all_evals_df = pd.DataFrame(table_data)
+st.dataframe(all_evals_df, width="stretch", hide_index=True)
+
+excel_bytes = to_excel_bytes(all_evals_df)
+file_stamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
+st.download_button(
+    "💾 Save Results as .xlsx",
+    data=excel_bytes,
+    file_name=f"all_evaluations_{file_stamp}.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+)
 
 st.markdown("---")
 
