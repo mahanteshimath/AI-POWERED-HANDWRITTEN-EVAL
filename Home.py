@@ -1,4 +1,5 @@
 import os
+import time
 import streamlit as st
 from snowflake.snowpark.context import get_active_session
 from utils import show_footer
@@ -37,23 +38,51 @@ st.set_page_config(
 )
 
 
-def get_snowflake_session():
-    if "snowflake_session" in st.session_state:
-        try:
-            st.session_state.snowflake_session.sql("SELECT 1").collect()
-            return st.session_state.snowflake_session
-        except Exception:
-            pass
+SESSION_HEALTHCHECK_SECS = 300
 
+
+@st.cache_resource(show_spinner=False)
+def _create_local_session(cfg_items: tuple[tuple[str, str], ...]):
+    from snowflake.snowpark import Session
+
+    cfg = dict(cfg_items)
+    return Session.builder.configs(cfg).create()
+
+
+def _build_session():
     try:
-        session = get_active_session()
+        return get_active_session()
     except Exception:
-        from snowflake.snowpark import Session
         cfg = st.secrets["connections"]["snowflake"]
-        session = Session.builder.configs(cfg).create()
+        cfg_items = tuple(sorted(dict(cfg).items()))
+        return _create_local_session(cfg_items)
 
-    st.session_state.snowflake_session = session
-    return session
+
+def get_snowflake_session(force_refresh: bool = False):
+    if force_refresh:
+        st.session_state.pop("snowflake_session", None)
+        st.session_state.pop("snowflake_last_healthcheck", None)
+        _create_local_session.clear()
+
+    session = st.session_state.get("snowflake_session")
+    if session is None:
+        session = _build_session()
+        st.session_state.snowflake_session = session
+        st.session_state.snowflake_last_healthcheck = time.time()
+        return session
+
+    last_check = st.session_state.get("snowflake_last_healthcheck", 0.0)
+    now = time.time()
+    if now - last_check > SESSION_HEALTHCHECK_SECS:
+        try:
+            session.sql("SELECT 1").collect()
+        except Exception:
+            session = _build_session()
+            st.session_state.snowflake_session = session
+        finally:
+            st.session_state.snowflake_last_healthcheck = now
+
+    return st.session_state.snowflake_session
 
 
 # ── Connect & initialise ──────────────────────────────────────────────────────
@@ -129,7 +158,7 @@ if _logo:
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     try:
-        get_snowflake_session().sql("SELECT 1").collect()
+        get_snowflake_session()
         st.success("☁️connected")
     except Exception as e:
         st.error(f"Connection lost: {e}")
