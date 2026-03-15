@@ -177,6 +177,19 @@ render_evaluation_detail(evaluation)
 st.markdown("---")
 st.subheader("Grade Distribution")
 
+grade_table_df = pd.DataFrame(
+    [
+        {
+            "Grade": grade,
+            "Count": grade_counts[grade],
+            "Share (%)": round((grade_counts[grade] / total_evals) * 100, 1),
+        }
+        for grade in GRADE_ORDER
+    ]
+)
+st.caption("Grade summary table")
+st.dataframe(grade_table_df, width="stretch", hide_index=True)
+
 if any(v > 0 for v in grade_counts.values()):
     col_bar, col_line = st.columns(2)
 
